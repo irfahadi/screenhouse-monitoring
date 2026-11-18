@@ -4,7 +4,8 @@ import { Bot, CheckCircle2, Droplets, PlayCircle, TriangleAlert } from "lucide-r
 import { API_URL } from "../config/api";
 import { getSocket } from "../lib/socket";
 
-const TERMINAL = new Set(["COMPLETED", "FAILED", "REJECTED"]);
+const TERMINAL = new Set(["COMPLETED", "FAILED", "REJECTED", "CANCELLED"]);
+const STALE_MS = 60 * 60 * 1000; // selaras dengan STALE_MIN=60 di missionController.js
 
 const STATUS_LABEL = {
   ISSUED: "Menunggu robot",
@@ -14,7 +15,14 @@ const STATUS_LABEL = {
   FAILED: "Gagal",
   REJECTED: "Ditolak robot",
   BUFFERED_OFFLINE: "Tertunda (offline)",
+  CANCELLED: "Dibatalkan",
 };
+
+function isStale(m) {
+  const ref = m?.last_event_at || m?.created_at;
+  if (!ref) return false;
+  return Date.now() - new Date(ref).getTime() > STALE_MS;
+}
 
 function fmtTime(ts) {
   if (!ts) return "—";
@@ -37,6 +45,7 @@ export default function RobotInspectionPanel({ screenhouseId, headers, readOnly 
   const [actuations, setActuations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const timer = useRef(null);
 
   const load = useCallback(async () => {
@@ -78,7 +87,7 @@ export default function RobotInspectionPanel({ screenhouseId, headers, readOnly 
     };
   }, [screenhouseId, load]);
 
-  const active = missions.find((m) => !TERMINAL.has(m.status));
+  const active = missions.find((m) => !TERMINAL.has(m.status) && !isStale(m));
 
   async function startMission() {
     if (!window.confirm("Kirim robot untuk menginspeksi semua tray sekarang?")) return;
@@ -97,6 +106,25 @@ export default function RobotInspectionPanel({ screenhouseId, headers, readOnly 
       toast.error(err.message);
     } finally {
       setStarting(false);
+    }
+  }
+
+  async function cancelMission(missionCode) {
+    if (!window.confirm(`Batalkan misi ${missionCode}?`)) return;
+    setCancelling(true);
+    try {
+      const r = await fetch(`${API_URL}/missions/${encodeURIComponent(missionCode)}/cancel`, {
+        method: "POST",
+        headers,
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.message || `HTTP ${r.status}`);
+      toast.success(`Misi ${missionCode} dibatalkan`);
+      load();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -125,12 +153,24 @@ export default function RobotInspectionPanel({ screenhouseId, headers, readOnly 
 
       {active && (
         <div className="mb-3 rounded-xl bg-blue-50 border border-blue-100 p-3">
-          <div className="flex justify-between text-xs text-blue-900">
+          <div className="flex justify-between items-center gap-2 text-xs text-blue-900">
             <span>
               {active.mission_code} · {STATUS_LABEL[active.status] ?? active.status}
               {active.current_tray ? ` · tray ${active.current_tray}` : ""}
             </span>
-            <span>{active.battery != null ? `baterai ${active.battery}%` : ""}</span>
+            <div className="flex items-center gap-2">
+              <span>{active.battery != null ? `baterai ${active.battery}%` : ""}</span>
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={() => cancelMission(active.mission_code)}
+                  disabled={cancelling}
+                  className="rounded-lg border border-red-200 bg-white px-2 py-0.5 text-[11px] font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                >
+                  {cancelling ? "Membatalkan…" : "Batalkan"}
+                </button>
+              )}
+            </div>
           </div>
           <div className="mt-2 h-2 rounded-full bg-blue-100 overflow-hidden">
             <div

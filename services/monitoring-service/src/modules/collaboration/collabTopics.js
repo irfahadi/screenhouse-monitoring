@@ -2,7 +2,7 @@
  * Kontrak MQTT model kolaborasi robot ↔ sistem monitoring melalui sink node
  * (proposal tesis, Tabel 3.3). Semua topik bisa diganti lewat env.
  *
- *   telemetry/env     sink → cloud   {h_id, n_id, seq, ts, sn, sm, ah, t, uv}
+ *   telemetry/env     sink → cloud   {h_id, n_id, seq, ts, sn, sm, ah, t, uv, n, p, k, ec, ph, st}
  *   mission/command   cloud → sink   {m_id, h_id, cmd, trays, crit_lvl, ts}
  *   mission/status    sink → cloud   {m_id, r_id, st, cur_tray, pct, bat, seq, ts}
  *   mission/result    sink → cloud   {m_id, h_id, tray_id, label, conf, h_cm, anom, seq, ts}
@@ -71,6 +71,7 @@ const idempKey = {
 /**
  * Terjemahkan telemetry/env (kunci ringkas) ke payload ingest internal.
  * sn → nutrient, sm → soil_moisture, ah → air_humidity, t → air_temperature, uv → uv_index.
+ * n → nitrogen, p → phosphorus, k → potassium, ec → conductivity, ph → soil_ph, st → soil_temperature.
  */
 function adaptTelemetry(msg) {
   if (!msg || !msg.h_id || !msg.n_id) return null;
@@ -82,16 +83,34 @@ function adaptTelemetry(msg) {
     air_humidity: num(msg.ah),
     air_temperature: num(msg.t),
     uv_index: num(msg.uv),
+    // Parameter tanah tambahan (NPK, EC, pH, suhu tanah)
+    nitrogen: num(msg.n),
+    phosphorus: num(msg.p),
+    potassium: num(msg.k),
+    conductivity: num(msg.ec),
+    soil_ph: num(msg.ph),
+    soil_temperature: num(msg.st),
     measured_at: toIsoOrNull(msg.ts),
     idemp_key: msg.seq != null ? idempKey.telemetry(msg) : null,
   };
 }
 
-/** Topik → jenis pesan kolaborasi (atau null). */
+/** Topik → jenis pesan kolaborasi (atau null). Mendukung format direct maupun format ber-prefix sink node. */
 function kindOf(topic) {
+  if (!topic || typeof topic !== "string") return null;
+
+  // 1. Cek exact match terhadap konfigurasi TOPICS
   for (const [kind, t] of Object.entries(TOPICS)) {
     if (t === topic) return kind;
   }
+
+  // 2. Cek pola akhiran untuk mendukung prefix screenhouse (mis. gh01/mission/status atau gh01/agent/mission/status)
+  if (topic.endsWith("/mission/command") || topic.endsWith("/command")) return "command";
+  if (topic.endsWith("/mission/status") || topic.endsWith("/status")) return "status";
+  if (topic.endsWith("/mission/result") || topic.endsWith("/result")) return "result";
+  if (topic.endsWith("/telemetry/env") || topic.endsWith("/telemetry")) return "telemetry";
+  if (topic.endsWith("/actuator/control") || topic.endsWith("/actuator")) return "actuator";
+
   return null;
 }
 

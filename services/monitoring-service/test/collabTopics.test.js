@@ -9,9 +9,23 @@ test("adaptTelemetry memetakan kunci ringkas Tabel 3.3 ke kolom sensor_data", ()
     sn: 42.1, sm: 68.5, ah: 74.0, t: 28.4, uv: 3.2 });
   assert.deepStrictEqual(
     { ...d, measured_at: undefined },
-    { node_id: "SH90-T01", destination_id: "SH90-SINK", nutrient: 42.1, soil_moisture: 68.5,
-      air_humidity: 74, air_temperature: 28.4, uv_index: 3.2, measured_at: undefined,
-      idemp_key: "SH90/SH90-T01/tel/104" }
+    {
+      node_id: "SH90-T01",
+      destination_id: "SH90-SINK",
+      nutrient: 42.1,
+      soil_moisture: 68.5,
+      air_humidity: 74,
+      air_temperature: 28.4,
+      uv_index: 3.2,
+      nitrogen: null,
+      phosphorus: null,
+      potassium: null,
+      conductivity: null,
+      soil_ph: null,
+      soil_temperature: null,
+      measured_at: undefined,
+      idemp_key: "SH90/SH90-T01/tel/104"
+    }
   );
   assert.strictEqual(new Date(d.measured_at).getTime(), now);
 });
@@ -32,7 +46,15 @@ test("kunci idempotensi identik dengan spsbench (repo tesis)", () => {
 test("kode rumah <-> kode sink; topik -> jenis pesan", () => {
   assert.strictEqual(t.sinkCodeOf("SH90"), "SH90-SINK");
   assert.strictEqual(t.houseCodeOf("SH90-SINK"), "SH90");
+  // Topik standar
+  assert.strictEqual(t.kindOf("mission/command"), "command");
+  assert.strictEqual(t.kindOf("mission/status"), "status");
   assert.strictEqual(t.kindOf("mission/result"), "result");
+  // Topik ber-prefix Sink Node RW612 / Jetson WiFi
+  assert.strictEqual(t.kindOf("gh01/mission/status"), "status");
+  assert.strictEqual(t.kindOf("gh01/agent/mission/status"), "status");
+  assert.strictEqual(t.kindOf("gh01/agent/mission/result"), "result");
+  assert.strictEqual(t.kindOf("gh01/agent/mission/command"), "command");
   assert.strictEqual(t.kindOf("screenhouse/1/sensor"), null);
   assert.strictEqual(t.adaptTelemetry({ n_id: "x" }), null);
 });

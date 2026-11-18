@@ -88,8 +88,16 @@ async function createMission(req, res) {
       m_id: code, h_id: houseCode, cmd: "INSPECT", trays, crit_lvl: critLvl, ts: Date.now(),
     };
     // Hanya collector yang memegang MQTT; perintah dititipkan ke q.device.command.
+    // Kirim ke topik utama dan topik ber-prefix house agar kompatibel baik mode direct
+    // maupun mode Sink Node relay (RW612).
+    const cmdTopics = [TOPICS.command];
+    if (houseCode) {
+      const hid = houseCode.toLowerCase();
+      cmdTopics.push(`${hid}/mission/command`);
+      cmdTopics.push(`${hid}/agent/mission/command`);
+    }
     await sendToQueue(COMMAND_QUEUE, {
-      screenhouseId, sinkCode: sink.rows[0].node_code, topics: [TOPICS.command], payload,
+      screenhouseId, sinkCode: sink.rows[0].node_code, topics: Array.from(new Set(cmdTopics)), payload,
     });
     try {
       await publishEvent(RK.MISSION_UPDATED, { mission, user_id: req.user?.id ?? null });
@@ -212,8 +220,14 @@ async function cancelMission(req, res) {
     );
     const payload = { m_id: mission.mission_code, h_id: mission.house_code, cmd: "ABORT",
       trays: [], crit_lvl: mission.crit_lvl ?? 1, ts: Date.now() };
+    const cmdTopics = [TOPICS.command];
+    if (mission.house_code) {
+      const hid = mission.house_code.toLowerCase();
+      cmdTopics.push(`${hid}/mission/command`);
+      cmdTopics.push(`${hid}/agent/mission/command`);
+    }
     await sendToQueue(COMMAND_QUEUE, {
-      screenhouseId: mission.screenhouse_id, topics: [TOPICS.command], payload,
+      screenhouseId: mission.screenhouse_id, topics: Array.from(new Set(cmdTopics)), payload,
     });
     try {
       await publishEvent(RK.MISSION_UPDATED, { mission: upd.rows[0], user_id: req.user?.id ?? null });

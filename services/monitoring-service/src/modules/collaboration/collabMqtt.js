@@ -22,12 +22,25 @@ function connectCollabMqtt(enqueueIngest, enqueueCollab) {
   const client = mqtt.connect(process.env.MQTT_BROKER_URL, {
     clientId: `shms-collab-${process.pid}-${Math.random().toString(16).slice(2, 8)}`,
   });
-  const topics = Object.values(TOPICS);
+  const baseTopics = Object.values(TOPICS);
+  const wildcardTopics = [
+    "+/mission/status",
+    "+/mission/result",
+    "+/agent/mission/status",
+    "+/agent/mission/result",
+    "+/actuator/control",
+  ];
+  const topics = Array.from(new Set([...baseTopics, ...wildcardTopics]));
 
   client.on("connect", () => {
     client.subscribe(topics, { qos: 1 }, (err) => {
       if (err) console.error("[collab-mqtt] gagal subscribe:", err.message);
-      else console.log("[collab-mqtt] subscribed:", topics.join(", "));
+      else {
+        console.log("[collab-mqtt] subscribed:", topics.join(", "));
+        if (process.env.JETSON_DIRECT_ENABLED === "true") {
+          console.log("[collab-mqtt] mode langsung Jetson Nano WiFi aktif");
+        }
+      }
     });
   });
   client.on("error", (err) => console.error("[collab-mqtt]", err.message));

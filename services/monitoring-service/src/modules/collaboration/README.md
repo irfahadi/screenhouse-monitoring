@@ -85,11 +85,46 @@ Realtime: Socket.IO memancarkan `mission-update`, `inspection-update`, dan
 Panduan lengkap langkah demi langkah (backend + simulasi Gazebo/ROS 2 + program uji):
 `PANDUAN_MENJALANKAN.md` di repo tesis (`irfahadi/tesis`).
 
-
 1. Migrasi DB, dan seed SPS simulasi bila perlu: lihat `database/README.md`.
 2. Jalankan role baru `ROLE=collaboration` (sudah ada di `docker/docker-compose.yaml`).
 3. Simulasi lengkap: Gazebo + ROS 2 Humble, emulator sink node, WSN 4 tray, dan program
    uji. Semuanya tersedia di repo tesis `irfahadi/tesis`, berkas
    `config.screenhouse-monitoring.yaml`.
+
+## Integrasi Jetson Nano (ROS 2 Humble) via WiFi Lokal
+
+Untuk menghubungkan **NVIDIA Jetson Nano** secara langsung maupun lewat Sink Node via WiFi lokal:
+
+```
+┌───────────────────────────────────────────────┐
+│              Komputer Lokal                   │
+│   - Backend Monitoring & Realtime Dashboard   │
+│   - Mosquitto MQTT Broker (port 1883)         │
+└───────────────────────┬───────────────────────┘
+                        │
+                        │ WiFi Lokal
+                        ▼
+┌───────────────────────────────────────────────┐
+│         Jetson Nano (ROS 2 Humble)            │
+│   - sps_jetson_bridge (mqtt_bridge_node)      │
+│   - Vision Node (YOLOv8 / TensorRT)           │
+│   - Robot Controller (Nav2 / Base / myCobot)  │
+└───────────────────────────────────────────────┘
+```
+
+1. **Jalankan package bridge di Jetson Nano:**
+   ```bash
+   ros2 launch sps_jetson_bridge jetson_bridge.launch.py \
+     mqtt_host:=<IP_KOMPUTER_LOKAL_ATAU_SINK_NODE> \
+     house_id:=GH01 \
+     robot_id:=RB01 \
+     relay_mode:=false
+   ```
+   *Gunakan `relay_mode:=true` jika paket mengalir lewat Sink Node fisik NPA-VEE-RW612.*
+
+2. **Topik yang Digunakan:**
+   - Command: `mission/command` (dan `gh01/mission/command`)
+   - Status: `mission/status` (dan `gh01/agent/mission/status`)
+   - Result: `mission/result` (dan `gh01/agent/mission/result`)
 
 Uji unit kontrak: `cd services/monitoring-service && npm run test:collab`.
