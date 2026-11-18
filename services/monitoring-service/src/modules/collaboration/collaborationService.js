@@ -37,11 +37,20 @@ async function cached(map, key, fn) {
 /** h_id → { screenhouse_id, sink_node_id } lewat kode sink "<h_id>-SINK". */
 function resolveHouse(houseCode) {
   if (!houseCode) return Promise.resolve(null);
-  return cached(cache.sink, houseCode, async () => {
-    const r = await pool.query(
+  const normalized = String(houseCode).trim().toUpperCase();
+  // GH01 adalah alias bawaan firmware RW612 untuk screenhouse robot (SH90 / screenhouse 90)
+  const lookupCode = normalized === "GH01" ? "SH90" : normalized;
+  return cached(cache.sink, lookupCode, async () => {
+    let r = await pool.query(
       `SELECT id AS sink_node_id, screenhouse_id FROM sink_nodes WHERE node_code = $1`,
-      [sinkCodeOf(houseCode)]
+      [sinkCodeOf(lookupCode)]
     );
+    if (!r.rows[0]) {
+      // Fallback ke sink node screenhouse robot (screenhouse 90)
+      r = await pool.query(
+        `SELECT id AS sink_node_id, screenhouse_id FROM sink_nodes WHERE screenhouse_id = 90 LIMIT 1`
+      );
+    }
     return r.rows[0] ?? null;
   });
 }
@@ -133,10 +142,27 @@ async function handleCommand(msg) {
 }
 
 // --- mission/status ---------------------------------------------------------
-async function handleStatus(msg) {
+async function handleStatus(msg, topic) {
   if (!msg?.m_id || !msg?.st || msg.seq == null) return invalid("status", "m_id/st/seq kosong", msg);
   if (!VALID_STATUS.has(msg.st)) return invalid("status", `st tidak dikenal: ${msg.st}`, msg);
-  const m = await ensureMission(msg.m_id, { robotCode: msg.r_id });
+
+  // Ambil houseCode dari msg.h_id atau prefix topic (mis. "gh01/mission/status")
+  let houseCode = msg.h_id;
+  if (!houseCode && topic) {
+    const parts = topic.split("/");
+    if (parts.length > 1 && !["mission", "telemetry", "actuator"].includes(parts[0])) {
+      houseCode = parts[0].toUpperCase();
+    }
+  }
+  const house = houseCode ? await resolveHouse(houseCode) : await resolveHouse("SH90");
+  const screenhouseId = house?.screenhouse_id ?? 90;
+  const effectiveHouseCode = houseCode || "SH90";
+
+  const m = await ensureMission(msg.m_id, {
+    robotCode: msg.r_id,
+    screenhouseId,
+    houseCode: effectiveHouseCode,
+  });
   const eventTs = toIsoOrNull(msg.ts);
   const ins = await pool.query(
     `INSERT INTO robot_mission_events
@@ -158,6 +184,8 @@ async function handleStatus(msg) {
         current_tray  = COALESCE($4, current_tray),
         battery       = COALESCE($5, battery),
         robot_code    = COALESCE($6, robot_code),
+        screenhouse_id = COALESCE(robot_missions.screenhouse_id, $10),
+        house_code     = COALESCE(robot_missions.house_code, $11),
         last_seq      = $7,
         last_event_at = COALESCE($8::timestamptz, NOW()),
         accepted_at   = CASE WHEN $2 = 'ACCEPTED' THEN COALESCE(accepted_at, $8::timestamptz, NOW())
@@ -171,32 +199,45 @@ async function handleStatus(msg) {
         AND status <> 'CANCELLED'
       RETURNING ${MISSION_COLUMNS}`,
     [m.id, msg.st, num(msg.pct), num(msg.cur_tray), num(msg.bat), msg.r_id ?? null,
-      num(msg.seq), eventTs, [...TERMINAL]]
+      num(msg.seq), eventTs, [...TERMINAL], screenhouseId, effectiveHouseCode]
   );
   const mission = upd.rows[0];
   if (mission) {
-    await emit(RK.MISSION_UPDATED, { mission, user_id: await ownerOf(mission.screenhouse_id) });
+    const finalShId = mission.screenhouse_id ?? screenhouseId;
+    await emit(RK.MISSION_UPDATED, { mission, user_id: await ownerOf(finalShId) });
   }
   return { ok: true, mission: mission ?? null, stale: !mission };
 }
 
 // --- mission/result ---------------------------------------------------------
-async function handleResult(msg) {
+async function handleResult(msg, topic) {
   if (!msg?.m_id || msg.tray_id == null || msg.seq == null) {
     return invalid("result", "m_id/tray_id/seq kosong", msg);
   }
   if (!VALID_LABEL.has(msg.label)) return invalid("result", `label tidak dikenal: ${msg.label}`, msg);
-  const house = await resolveHouse(msg.h_id);
+
+  let houseCode = msg.h_id;
+  if (!houseCode && topic) {
+    const parts = topic.split("/");
+    if (parts.length > 1 && !["mission", "telemetry", "actuator"].includes(parts[0])) {
+      houseCode = parts[0].toUpperCase();
+    }
+  }
+  const house = houseCode ? await resolveHouse(houseCode) : await resolveHouse("SH90");
+  const screenhouseId = house?.screenhouse_id ?? 90;
+  const effectiveHouseCode = houseCode || "SH90";
+
   const m = await ensureMission(msg.m_id, {
-    screenhouseId: house?.screenhouse_id, houseCode: msg.h_id,
+    screenhouseId, houseCode: effectiveHouseCode,
   });
-  const screenhouseId = m.screenhouse_id ?? house?.screenhouse_id ?? null;
+  const finalScreenhouseId = m.screenhouse_id ?? screenhouseId;
   const trayNo = Number(msg.tray_id);
   // Tray n ↔ sensor node "<h_id>-Tnn" (konvensi kode node repo).
-  const node = msg.h_id
-    ? await pool.query(`SELECT id FROM sensor_nodes WHERE node_code = $1`,
-      [`${msg.h_id}-T${String(trayNo).padStart(2, "0")}`])
-    : { rows: [] };
+  const lookupPrefix = (effectiveHouseCode === "GH01" || !effectiveHouseCode) ? "SH90" : effectiveHouseCode;
+  const node = await pool.query(
+    `SELECT id FROM sensor_nodes WHERE screenhouse_id = $1 AND (node_code = $2 OR node_code = $3)`,
+    [finalScreenhouseId, `${lookupPrefix}-T${String(trayNo).padStart(2, "0")}`, `${effectiveHouseCode}-T${String(trayNo).padStart(2, "0")}`]
+  );
   const ins = await pool.query(
     `INSERT INTO tray_inspections
        (mission_id, screenhouse_id, sensor_node_id, tray_no, label, confidence,
@@ -204,14 +245,14 @@ async function handleResult(msg) {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, COALESCE($11::timestamptz, NOW()))
      ON CONFLICT (idemp_key) DO NOTHING
      RETURNING *`,
-    [m.id, screenhouseId, node.rows[0]?.id ?? null, trayNo, msg.label, num(msg.conf),
-      num(msg.h_cm), num(msg.anom) ?? 0, num(msg.seq), idempKey.result(msg), toIsoOrNull(msg.ts)]
+    [m.id, finalScreenhouseId, node.rows[0]?.id ?? null, trayNo, msg.label, num(msg.conf),
+      num(msg.h_cm), num(msg.anom) ?? 0, num(msg.seq), idempKey.result({ ...msg, h_id: effectiveHouseCode }), toIsoOrNull(msg.ts)]
   );
   const inspection = ins.rows[0];
   if (!inspection) return { ok: true, duplicate: true };
   await emit(RK.INSPECTION_RECORDED, {
     inspection: { ...inspection, mission_code: msg.m_id },
-    user_id: await ownerOf(screenhouseId),
+    user_id: await ownerOf(finalScreenhouseId),
   });
   return { ok: true, inspection };
 }
@@ -248,7 +289,7 @@ const HANDLERS = {
 async function processCollabJob(job) {
   const fn = HANDLERS[job?.kind];
   if (!fn) return invalid("job", `jenis tidak dikenal: ${job?.kind}`, job);
-  return fn(job.payload);
+  return fn(job.payload, job.topic);
 }
 
 module.exports = {

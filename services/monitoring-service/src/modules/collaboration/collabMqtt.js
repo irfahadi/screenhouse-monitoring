@@ -29,6 +29,8 @@ function connectCollabMqtt(enqueueIngest, enqueueCollab) {
     "+/agent/mission/status",
     "+/agent/mission/result",
     "+/actuator/control",
+    "+/mission/command",
+    "+/agent/mission/command",
   ];
   const topics = Array.from(new Set([...baseTopics, ...wildcardTopics]));
 
@@ -46,6 +48,21 @@ function connectCollabMqtt(enqueueIngest, enqueueCollab) {
   client.on("error", (err) => console.error("[collab-mqtt]", err.message));
 
   client.on("message", async (topic, message) => {
+    // Relay Sink Node RW612 otomatis:
+    // gh01/agent/mission/status -> gh01/mission/status
+    // gh01/agent/mission/result -> gh01/mission/result
+    // gh01/mission/command      -> gh01/agent/mission/command
+    if (topic.includes("/agent/mission/status")) {
+      const relayTopic = topic.replace("/agent/mission/status", "/mission/status");
+      client.publish(relayTopic, message, { qos: 1 });
+    } else if (topic.includes("/agent/mission/result")) {
+      const relayTopic = topic.replace("/agent/mission/result", "/mission/result");
+      client.publish(relayTopic, message, { qos: 1 });
+    } else if (!topic.includes("/agent/") && topic.endsWith("/mission/command")) {
+      const relayTopic = topic.replace(/\/mission\/command$/, "/agent/mission/command");
+      client.publish(relayTopic, message, { qos: 1 });
+    }
+
     const kind = kindOf(topic);
     if (!kind) return;
     recordMqttReceived();
